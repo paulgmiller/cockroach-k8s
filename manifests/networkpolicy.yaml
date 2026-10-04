@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cockroachdb-ingress
+  namespace: cockroach
+spec:
+  podSelector:
+    matchLabels:
+      app: cockroachdb
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 26257
+        - protocol: TCP
+          port: 8080

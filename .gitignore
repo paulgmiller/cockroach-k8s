@@ -1,0 +1,4 @@
+# Never commit cluster credentials or local secret files.
+kubeconfig*
+*.key
+.env*
