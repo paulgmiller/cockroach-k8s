@@ -14,6 +14,8 @@ spec:
       labels:
         app: cockroachdb
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: aks-main-11118102-vmss000001
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 60
       containers:
@@ -66,12 +68,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /cockroach/cockroach-data
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: [ReadWriteOnce]
-        storageClassName: managed-csi
-        resources:
-          requests:
-            storage: 10Gi
+      volumes:
+        - name: data
+          hostPath:
+            path: /var/lib/cockroachdb/cockroach
+            type: DirectoryOrCreate
