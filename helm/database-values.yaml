@@ -1,0 +1,61 @@
+k8s:
+  fullnameOverride: cockroachdb
+cockroachdb:
+  tls:
+    enabled: false
+    selfSigner:
+      enabled: false
+    certManager:
+      enabled: false
+    externalCertificates:
+      enabled: false
+  crdbCluster:
+    image:
+      name: cockroachdb/cockroach:v26.2.7
+    regions:
+      - code: westus3
+        cloudProvider: azure
+        namespace: cockroach
+        nodes: 1
+    dataStore:
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          storageClassName: managed-csi
+          resources:
+            requests:
+              storage: 10Gi
+          volumeMode: Filesystem
+    persistentVolumeClaimRetentionPolicy:
+      whenDeleted: Retain
+    startFlags:
+      upsert:
+        - --cache=128MiB
+        - --max-sql-memory=128MiB
+        - --max-disk-temp-storage=1GiB
+    podTemplate:
+      metadata:
+        labels:
+          app: cockroachdb
+      spec:
+        nodeSelector:
+          kubernetes.io/os: linux
+        containers:
+          - name: cockroachdb
+            resources:
+              requests:
+                cpu: 250m
+                memory: 512Mi
+              limits:
+                cpu: '1'
+                memory: 1Gi
+        topologySpreadConstraints: []
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchLabels:
+                      app: cockroachdb
+                  topologyKey: kubernetes.io/hostname

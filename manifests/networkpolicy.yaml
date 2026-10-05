@@ -15,4 +15,11 @@ spec:
         - protocol: TCP
           port: 26257
         - protocol: TCP
+          port: 26258
+        - protocol: TCP
           port: 8080
+    # Allow controller RPC/health traffic to operator-managed database pods.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cockroach-operator-system

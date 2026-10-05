@@ -1,0 +1,5 @@
+# One controller for this small development deployment; database pods are separate.
+numReplicas: 1
+cloudRegion: westus3
+watchNamespaces: cockroach
+selfSignedOperatorCerts: true

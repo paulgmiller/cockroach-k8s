@@ -1,0 +1,199 @@
+---
+# Source: cockroachdb-chart/templates/serviceaccount.yaml
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: cockroachdb
+  namespace: "cockroach"
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb"
+    app.kubernetes.io/managed-by: "Helm"
+
+---
+# Source: cockroachdb-chart/templates/role.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cockroachdb-cockroach-node-reader
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb"
+    app.kubernetes.io/managed-by: "Helm"
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["security.openshift.io"]
+    resources: ["securitycontextconstraints"]
+    verbs: ["use"]
+
+---
+# Source: cockroachdb-chart/templates/rolebinding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cockroachdb-cockroach-node-reader
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb"
+    app.kubernetes.io/managed-by: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cockroachdb-cockroach-node-reader
+subjects:
+  - kind: ServiceAccount
+    name: cockroachdb
+    namespace: "cockroach"
+
+---
+# Source: cockroachdb-chart/templates/service.public.yaml
+# This Service is meant to be used by clients of the database.
+# It exposes a ClusterIP that will automatically load balance connections
+# to the different database Pods.
+kind: Service
+apiVersion: v1
+metadata:
+  name: cockroachdb-public
+  namespace: "cockroach"
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/component: cockroachdb
+spec:
+  selector:
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb"
+    app: cockroachdb
+    app.kubernetes.io/component: cockroachdb
+  # Cockroach Cloud operator doesn't provide a way to change the sql,grpc and http ports for the pods. Hence, making these
+  # ports static here.
+  type: "ClusterIP"
+  ports:
+    # The main port, served by gRPC, serves Postgres-flavor SQL, inter-node
+    # traffic and the CLI.
+    - name: "grpc"
+      port: 26258
+      targetPort: grpc
+    - name: "sql"
+      port: 26257
+      targetPort: sql
+    # The secondary port serves the UI as well as health and debug endpoints.
+    - name: "http"
+      port: 8080
+      targetPort: http
+
+---
+# Source: cockroachdb-chart/templates/crdb.yaml
+apiVersion: crdb.cockroachlabs.com/v1beta1
+kind: CrdbCluster
+metadata:
+  name: cockroachdb
+  namespace: cockroach
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb-cockroach
+    app.kubernetes.io/instance: cockroachdb
+    app.kubernetes.io/version: "26.2.5"
+    app.kubernetes.io/managed-by: Helm
+    app: cockroachdb
+    app.kubernetes.io/component: cockroachdb
+spec:
+  tlsEnabled: false
+  regions:
+    - cloudProvider: azure
+      code: westus3
+      namespace: cockroach
+      nodes: 1
+  rollingRestartDelay: 30s
+  template:
+    spec:
+      image: "cockroachdb/cockroach:v26.2.7"
+      dataStore:
+        volumeClaimTemplate:
+          metadata: {}
+          spec:
+            accessModes:
+            - ReadWriteOnce
+            resources:
+              requests:
+                storage: 10Gi
+            storageClassName: managed-csi
+            volumeMode: Filesystem
+      sideCars:
+        containers: []
+        initContainers: []
+        volumes: []
+      grpcPort: 26258
+      sqlPort: 26257
+      httpPort: 8080
+      startFlags:
+        upsert:
+        - --cache=128MiB
+        - --max-sql-memory=128MiB
+        - --max-disk-temp-storage=1GiB
+      podTemplate:
+        metadata:
+          labels:
+            app.kubernetes.io/name: cockroachdb
+            app.kubernetes.io/instance: "cockroachdb"
+            app: cockroachdb
+            app.kubernetes.io/component: cockroachdb
+          annotations:
+            helm.sh/restartedAt: "2021-10-18T00:00:00Z"
+        spec:
+            affinity:
+              podAntiAffinity:
+                preferredDuringSchedulingIgnoredDuringExecution:
+                - podAffinityTerm:
+                    labelSelector:
+                      matchLabels:
+                        app: cockroachdb
+                    topologyKey: kubernetes.io/hostname
+                  weight: 100
+            containers:
+            - name: cockroachdb
+              resources:
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+                requests:
+                  cpu: 250m
+                  memory: 512Mi
+            nodeSelector:
+              kubernetes.io/os: linux
+            serviceAccountName: cockroachdb
+            topologySpreadConstraints: []
+      persistentVolumeClaimRetentionPolicy:
+        whenDeleted: Retain
+---
+# Source: cockroachdb-chart/templates/tests/client.yaml
+kind: Pod
+apiVersion: v1
+metadata:
+  name: cockroachdb-test
+  namespace: "cockroach"
+  annotations:
+    helm.sh/hook: test-success
+spec:
+  restartPolicy: Never
+  containers:
+    - name: client-test
+      image: "cockroachdb/cockroach:v26.2.7"
+      imagePullPolicy: "IfNotPresent"
+      command:
+        - /cockroach/cockroach
+        - sql
+        - --insecure
+        - --host
+        - cockroachdb-public.cockroach
+        - --port
+        - "26258"
+        - -e
+        - SHOW DATABASES;

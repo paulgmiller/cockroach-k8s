@@ -1,34 +1,57 @@
-# Managed-CSI reset verification
+# Operator deployment verification
 
-Verified on 2026-10-04 (America/Los_Angeles), context `zebu`.
+Verified 2026-10-04 America/Los_Angeles (2026-10-05 UTC), context `zebu`.
 
-- Stopped the old database before removing its local store.
-- Removed old PVCs `data-cockroachdb-0` and `local-data-cockroachdb-0`.
-- Verified deletion of original Azure PV `pvc-20fdfaab-2d93-442f-8e4a-a82c23ad9c6f`.
-- Cleanup Job logged `Discarded local CockroachDB store removed`; Job completed
-  and was removed. Static local PV `cockroachdb-local` was deleted afterward.
-- Removed the dedicated cockroach-storage namespace, local provisioner and its
-  RBAC, plus StorageClasses cockroach-local and cockroach-local-auto.
-- Recreated the StatefulSet with a data claim template using managed-csi and
-  preferred anti-affinity. Replica count remains one; PDB maxUnavailable remains 1.
-- New PVC `data-cockroachdb-0` is Bound, 10Gi, ReadWriteOnce, managed-csi.
-- New PV is `pvc-7b9708f7-3d7e-43b0-a9bd-73f3140a3ea4`, CSI driver
-  disk.csi.azure.com, StandardSSD_LRS, reclaim policy Delete.
-- Fresh init Job completed with `Cluster successfully initialized`.
-- Database pod is 1/1 Running with zero container restarts after deployment.
-- SHOW DATABASES initially returned only defaultdb, postgres and system,
-  confirming a fresh database rather than migrated data.
-- Created temporary csi_smoke database/table, inserted a row and read it through
-  service cockroachdb:26257. The test database was removed after validation.
-- Fresh zone policies request three user-data replicas and five replicas for
-  critical system ranges. One live node is under-replicated and has no HA.
-- No CockroachDB operator CRDs are installed. Vendor guidance recommending the
-  newer operator is recorded in README; an operator has not been deployed.
-- Final manifest diff returned exit code 0 with no differences. The namespace
-  has only the new managed-CSI PVC; both named old PVs are absent. YAML parsing,
-  shell syntax validation and Git whitespace checks passed.
+## Deployed state
 
-No worker upgrade, cross-worker disk reattachment, production load test,
-backup/restore or managed-disk multi-node scale-out test was performed.
-The previous local-volume version was tested with two database nodes, but that
-is not evidence of managed-disk upgrade availability.
+- Official current operator chart **1.1.0**, controller image
+  `cockroachdb/cockroachdb-operator-v2:v1.1.0`.
+- One controller Ready in `cockroach-operator-system`, region westus3,
+  watching namespace cockroach. Its chart requests 500m CPU/1000Mi memory.
+  An observed metrics sample was 6m CPU/31Mi memory; this is not a sizing guarantee.
+- Database chart **26.2.4**, image override **cockroachdb/cockroach:v26.2.7**.
+- CrdbCluster `cockroachdb` initialized, reconciled, observed generation 1,
+  readyNodes 1, database version v26.2.7.
+- CrdbNode/pod `cockroachdb-7g8tr`, database container Running and Ready.
+  Node locality: region=azure-westus3, zone=azure-0.
+- One Bound 10Gi ReadWriteOnce PVC `cockroachdb-7g8tr`, managed-csi,
+  PV `pvc-12826758-a804-45ca-8e58-c30073e9cb44`.
+- Previous manual PVC `data-cockroachdb-0` and its PV
+  `pvc-7b9708f7-3d7e-43b0-a9bd-73f3140a3ea4` deleted; no leftover claims
+  in cockroach. The earlier local provisioner/volumes were already removed.
+- Operator-owned PDB `cockroachdb-pdb`: minAvailable 0 at one desired node,
+  one disruption allowed. CrdbCluster default disruptionBudget is 1.
+- SQL uses `cockroachdb-public:26257`; RPC is 26258. Services are internal only.
+- TLS disabled, password authentication absent. NetworkPolicy includes
+  same-namespace SQL/RPC/HTTP and controller namespace traffic.
+
+## Checks performed
+
+1. Queried old deployment before replacement: only default databases were present.
+   Started a fresh operator deployment under the user's existing data-reset authorization.
+2. Connected through the new public ClusterIP service, created a test database/table,
+   inserted and read a row.
+3. Deleted the database pod; operator recreated it with a new pod UID, the same
+   CrdbNode name and the **same PVC/PV**. Pod became Ready again.
+4. Read the original row through the service after recreation, then removed the
+   test database. This verified durable storage and controller pod recovery.
+5. Re-ran `scripts/apply.sh`: both Helm releases upgraded to revision 2,
+   existing database pod/PVC remained, initialization and readiness checks passed.
+6. Both pinned charts passed `helm lint` with saved values. All shell scripts
+   passed `bash -n`. A temporary three-node values file rendered a CrdbCluster
+   with nodes=3 and managed-csi storage; saved count remains one. Rendered YAML
+   contains no Secrets. The saved CrdbCluster also passed server-side dry-run
+   validation against the live operator API.
+7. Queried node/range status: one live/available node, no unavailable ranges;
+   ranges under-replicated as expected with one node and vendor defaults.
+   No replication reduction SQL was applied to the current one-node database.
+
+## Limits
+
+Live scale-out, live decommissioning, cross-worker disk reattachment, AKS drains,
+controller failover and database-version upgrades were not exercised. No worker
+surge settings were changed. There is no HA with one database replica. The future
+scale helper intentionally applies three-copy policies including critical system
+ranges; review README before using it. Its range-convergence logic was syntax
+checked and its desired three-node resource rendered, but the full scale-up path
+was not run against this cluster. Existing user zone overrides are not rewritten.
