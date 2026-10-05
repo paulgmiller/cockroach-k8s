@@ -1,71 +1,73 @@
 # Deployment verification
 
-Verified on 2026-10-04 against context `zebu` with the kubeconfig at
-`/home/pmiller/.kube/config`.
+Verified on 2026-10-04 (America/Los_Angeles) against context `zebu`, using
+`/home/pmiller/.kube/config`. The Kubernetes cluster has two Ready workers.
 
-- Client-side dry run passed; manifests applied successfully.
-- Namespace `cockroach` created.
-- StatefulSet `cockroachdb` rolled out successfully: pod `cockroachdb-0` is
-  `1/1 Running`, with zero container restarts after the final pod replacement.
-- Active data volume is PVC `cockroachdb-local`, bound to local PV
-  `cockroachdb-local` at `/var/lib/cockroachdb/cockroach` on worker
-  `aks-main-11118102-vmss000001`, with reclaim policy `Retain`.
-- Original PVC `data-cockroachdb-0` is retained only as an offline rollback copy;
-  the running pod mounts only the new local PVC.
-- Client service is ClusterIP on SQL 26257 and HTTP 8080; no external IP.
-- SQL connection using service hostname `cockroachdb:26257` succeeded.
-- `SELECT version()` returned CockroachDB CCL v26.2.7, linux amd64.
-- Created a temporary database/table and wrote `(1, 'persistent')`.
-- Restarted the StatefulSet and waited for readiness; the same row was read
-  successfully afterward, verifying persistence across pod replacement.
-- Dropped the temporary database `deployment_smoke` after verification.
-- `kubectl diff -k manifests` returned exit code 0, with no differences.
+## Final state
 
-## Host volume migration
+- StatefulSet `cockroachdb` has one desired database replica, `1/1 Running`,
+  zero container restarts after the final rollout, using `cockroach start`.
+- Replica 0 uses PVC `local-data-cockroachdb-0`, bound to static local PV
+  `cockroachdb-local`, retaining `/var/lib/cockroachdb/cockroach` on
+  `aks-main-11118102-vmss000001`.
+- StorageClass `cockroach-local-auto` uses the dedicated automatic provisioner,
+  local-type volumes, WaitForFirstConsumer binding, and Retain reclamation.
+- Provisioner deployment in `cockroach-storage` is `1/1 Running`.
+- Init Job completed and correctly recognized the existing initialized database.
+- All 15 zone configurations previously set to one replica now specify three;
+  they remained at three after a database pod replacement.
+- Final node status reported one live/available node, zero unavailable ranges,
+  and 56 under-replicated ranges. Under-replication is expected with only one
+  running database node and a desired replication factor of three.
+- Final `kubectl diff -k manifests` exited 0 with no differences.
+- All YAML parsed, `bash -n scripts/scale.sh` passed, and Git whitespace checks passed.
 
-Historical verification of the preceding hostPath deployment:
+## Scale-out test
 
-- Wrote `(1, 'migrated')` to `host_volume_smoke.checks` before stopping the
-  original PVC-backed database.
-- Scaled the StatefulSet to zero and waited for pod deletion.
-- Copied the stopped store to the host directory using the one-time migration
-  Job. Logs confirmed `Offline store copied successfully`; Job completed 1/1.
-- Removed the migration Job and recreated the StatefulSet with no claim template,
-  a hostPath volume, and the matching worker selector.
-- Successfully read the pre-migration row through `cockroachdb:26257`.
-- Restarted the host-volume StatefulSet and successfully read the same row again.
-- Dropped the test database after verification. The retained source disk is frozen
-  at the pre-migration state and still includes that temporary test database.
-- Confirmed live pod volumes contain only the hostPath data volume, pod is
-  `1/1 Running` with zero container restarts, and manifest diff is empty.
+1. Wrote `(1, 'scale-ready')` to a temporary table before the conversion.
+2. Stopped the database, retained its PV and rebound it to the new ordinal-0
+   claim. Recreated the StatefulSet because claim templates and pod management
+   policy are immutable. The same initialized store restarted successfully.
+3. Confirmed the original row remained available after conversion.
+4. Temporarily scaled to two database replicas while replication policies still
+   requested one copy, so the test could safely return to one node afterward.
+5. The provisioner automatically created a separate local directory and PV on
+   worker `aks-main-11118102-vmss000000` for `local-data-cockroachdb-1`.
+6. Verified the generated PV had `spec.local`, no `spec.hostPath`, worker node
+   affinity, and reclaim policy Retain.
+7. Both CockroachDB nodes were live/available. A SQL query through replica 1
+   returned the row written before conversion, confirming membership in the
+   existing cluster rather than an independent database.
+8. Fully decommissioned database node ID 2, waited for zero remaining replicas
+   and successful draining, then scaled back to one database replica.
+9. Deleted only the decommissioned test claim/store, using Delete reclamation
+   for that disposable PV; verified the test PV was removed. Replica 0 was retained.
+10. Applied `operations/enable-replication.sql`, rolled replica 0 once more,
+    and verified both the test row and three-copy zone policies survived.
+11. Dropped the temporary database `scale_ready_smoke` after verification.
 
-## Local PersistentVolume conversion
+The scale helper correctly rejected three replicas with only two Ready workers,
+without modifying the desired manifest count. Its three-or-more execution path
+cannot be exercised until additional workers exist. Three-node quorum behavior,
+worker failure, backup/restore, and fresh-cluster initialization were not tested.
+The existing-cluster init path and two-node join/provisioning path were tested.
+NetworkPolicy is installed; cross-namespace enforcement was not tested.
 
-- Server-side dry run passed for all resources.
-- Created StorageClass `cockroach-local` with `kubernetes.io/no-provisioner`,
-  `WaitForFirstConsumer`, and reclaim policy `Retain`.
-- Created static local PV `cockroachdb-local` with 10Gi declared capacity,
-  ReadWriteOnce, node affinity, and reservation for the matching namespace/PVC.
-- Created PVC `cockroach/cockroachdb-local`; verified both PVC and PV are Bound.
-- Replaced the StatefulSet hostPath with a PVC mount and removed its node selector.
-- No file copy was needed; the local PV reused the existing directory.
-- A row `(1, 'local-pv-preserved')` written to `local_pv_smoke.checks` before
-  conversion was read successfully through the SQL service after conversion.
-- Restarted the StatefulSet; the same row was read successfully afterward.
-- Dropped the temporary database after verification.
-- Confirmed the final pod uses the local PVC, runs on the PV's worker, and is
-  `1/1 Running` with zero container restarts.
-- Final `kubectl diff -k manifests` returned exit code 0 with no differences.
-- Retain reclamation and node-loss recovery are documented but were not tested
-  destructively. Declared PV capacity does not enforce a directory quota.
+## Historical migrations and retained resources
 
-Running image digest reported by Kubernetes:
+The initial Azure-disk deployment was migrated offline to the host directory.
+A pre-migration test row survived the copy and a pod restart. The host directory
+was then wrapped in a static local PV/PVC; another row survived that conversion
+and a pod restart. The final scalable conversion reused the same data again.
+
+The unused Azure PVC `data-cockroachdb-0` remains as an earlier rollback snapshot
+and still incurs disk charges. It does not contain writes after the host migration.
+The old static StorageClass `cockroach-local` remains unused. The old local PVC
+`cockroachdb-local` was removed during rebinding; its data is now in replica 0's
+retained store, with no data copy needed for this conversion.
+
+Running database image digest:
 
 ```text
 docker.io/cockroachdb/cockroach@sha256:9464ae30465b887295459b98d129a76d074caeaa4c86836d369c6d2fdddd1685
 ```
-
-Ingress NetworkPolicy is installed. Its cross-namespace enforcement was not
-tested; it depends on the cluster's network policy implementation. SQL service
-resolution, readiness probes and storage persistence were tested. No load test,
-node failure test, backup/restore test or production suitability claim is made.

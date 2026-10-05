@@ -1,153 +1,166 @@
-# Minimal CockroachDB on Kubernetes
+# CockroachDB with scalable local storage
 
-Single-node development database in namespace `cockroach`, deployed to the
-`zebu` context using `/home/pmiller/.kube/config`. Credentials are not in this repo.
-The manifests are plain Kubernetes resources, assembled with built-in Kustomize.
-Storage is a static local PersistentVolume and PVC reusing the existing directory
-`/var/lib/cockroachdb/cockroach` on `aks-main-11118102-vmss000001`.
+CockroachDB v26.2.7 runs in namespace `cockroach` on context `zebu`.
+The current desired size is **one database replica**, with no high availability.
+The configuration uses multi-node startup and can scale when more workers exist.
+Kubeconfig: `/home/pmiller/.kube/config`; credentials are excluded from Git.
 
-## Deploy and verify
-
-The local directory must already exist on the worker and be writable by the
-container. It exists on this cluster from the previous hostPath deployment. A
-fresh installation requires an administrator to prepare the directory or a
-dedicated mounted disk on the chosen worker, and update the PV node affinity.
-The local volume plugin does not create directories or provision disks. Applying
-the manifests requires permissions for cluster-scoped PV and StorageClass objects.
-
+## Apply and connect
 
 ```bash
 export KUBECONFIG=/home/pmiller/.kube/config
 kubectl --context=zebu apply -k manifests
 kubectl --context=zebu -n cockroach rollout status statefulset/cockroachdb --timeout=300s
+kubectl --context=zebu -n cockroach wait --for=condition=complete job/cockroachdb-init --timeout=600s
 kubectl --context=zebu -n cockroach get pods,pvc,services
-kubectl --context=zebu get pv cockroachdb-local
-kubectl --context=zebu -n cockroach exec cockroachdb-0 -- \
-  /cockroach/cockroach sql --insecure --host=localhost:26257 \
-  --execute='SELECT version(); SELECT 1;'
 ```
 
-`start-single-node` initializes the database automatically; no init Job is needed.
-The container command invokes `/cockroach/cockroach` directly because the image's
-shell entrypoint rejects a non-localhost listen address in single-node mode.
+The init Job recognizes an existing initialized cluster. On a fresh store it
+runs `cockroach init`. Headless service DNS publishes unready pods to allow
+bootstrap and joining. Each node advertises its stable StatefulSet DNS name and
+uses the first three ordinals as join addresses. Data replication is configured
+for three copies; while only one database node runs, ranges are under-replicated.
 
-## Connect
-
-SQL endpoint for applications in this namespace:
+SQL endpoint within this namespace:
 `postgresql://root@cockroachdb.cockroach.svc.cluster.local:26257/defaultdb?sslmode=disable`.
-
-For local access, keep this command running:
+Local access:
 
 ```bash
 kubectl --kubeconfig=/home/pmiller/.kube/config --context=zebu -n cockroach \
   port-forward --address=127.0.0.1 service/cockroachdb 26257:26257 8080:8080
 ```
 
-Then connect to `postgresql://root@localhost:26257/defaultdb?sslmode=disable`,
-or open the DB Console at <http://localhost:8080>.
+SQL: `postgresql://root@localhost:26257/defaultdb?sslmode=disable`.
+DB Console: <http://localhost:8080>.
 
-## Tradeoffs
+## Scale up
 
-| Choice | Benefit | Cost or limitation |
+After adding at least three Ready workers with enough available CPU, memory and
+disk space, run from this repository:
+
+```bash
+./scripts/scale.sh 3
+# Later, with at least five usable workers:
+./scripts/scale.sh 5
+```
+
+The helper updates the manifest replica count, applies it and waits for rollout.
+Commit the updated manifest afterward. It rejects scale-down and fewer than
+three replicas, and checks the count of Ready, schedulable Linux workers.
+Taints, available resources and storage capacity can still prevent scheduling;
+the worker count is a preliminary check, not a complete placement guarantee.
+`KUBECONFIG` and `KUBE_CONTEXT` can override its defaults.
+
+Each replica receives its own `local-data-cockroachdb-N` PVC via
+`volumeClaimTemplates`. A dedicated Rancher Local Path Provisioner creates the
+local directory and **local-type PV** automatically on the scheduled worker.
+You do not need to create PV YAML for additional replicas. Required pod
+anti-affinity places one database replica per worker. PVCs and PVs are retained
+when replicas are removed or the StatefulSet is deleted.
+
+After rollout, verify database health, not just pod readiness:
+
+```bash
+kubectl --context=zebu -n cockroach exec cockroachdb-0 -- \
+  /cockroach/cockroach node status --insecure --host=localhost:26257 --ranges
+```
+
+All active database nodes should be live; allow replication to converge, then
+check the DB Console for under-replicated and unavailable ranges. Three database
+nodes on separate workers provide the intended three replicas; five database
+nodes add capacity but do not automatically change the replication factor to five.
+Review CockroachDB licensing before multi-node use, as well as TLS and workload sizing.
+
+## Storage and tradeoffs
+
+| Choice | Benefit | Tradeoff |
 | --- | --- | --- |
-| One StatefulSet replica, `start-single-node` | Few resources, automatic initialization | No replication or high availability. Pod restarts, upgrades, node failures, and storage migration cause downtime. Do not simply raise the replica count; a multi-node deployment needs `start`, join addresses, initialization, and replication planning. |
-| Insecure mode | No certificates or credential bootstrap | No TLS or password authentication; reachable clients can act as root. Use only for trusted development data. Production requires TLS, proper SQL users, and managed secrets. |
-| ClusterIP services and ingress NetworkPolicy | No public load balancer; ingress allowed only from pods in `cockroach` | Policy requires a supporting cluster network implementation and does not replace authentication. Node traffic and authorized Kubernetes port-forward access have separate access paths. Egress is unrestricted. Applications in other namespaces need an explicit policy change. |
-| Static local PV and PVC, declared 10Gi | Kubernetes tracks the claim and volume; no new managed disk; reuses existing data | The directory shares the worker filesystem. Declared capacity is a binding value, not an enforced quota or reserved disk space. Monitor actual disk space and use a dedicated filesystem for isolation. Node deletion, replacement or reimaging can lose all data. |
-| PV node affinity for `aks-main-11118102-vmss000001` | Scheduler places the pod on the worker containing its data; no pod node selector needed | Cannot fail over to another worker. If that worker is unavailable the pod stays Pending. Moving to another worker requires offline migration or restore and a replacement PV. |
-| `cockroach-local` StorageClass, `WaitForFirstConsumer` | Binding considers pod scheduling; no external provisioner | Static provisioning and directory preparation are manual. PV claim reservation and PVC selector limit binding to this database. |
-| PV reclaim policy `Retain` | PVC or namespace deletion preserves the PV and local data | Released PVs require manual reclamation before reuse. Retention provides no backup, replication, or protection from loss of the underlying worker disk. |
-| 250m CPU / 512Mi memory requested; 1 CPU / 1Gi limited | Small scheduling footprint; bounded resource consumption | Development sizing only. CPU throttling and OOM restarts are possible under load. 128Mi cache and SQL memory budgets leave headroom but do not cap all memory. Temporary SQL disk use capped at 1Gi. |
-| Version tag `v26.2.7` | Repeatable version selection, avoids `latest`; patch includes security fixes | Tag is not an immutable digest; updates require deliberate review. Record the running digest in deployment verification. |
-| Direct manifests, no operator | Simple installation; no operator or CRDs | Manual upgrades, backups, monitoring, certificate management, and recovery. No disruption budget since this single node cannot provide continuous availability. |
+| `start`, per-replica PVCs, join DNS and init Job | Supports adding database nodes without rewriting storage or startup | More configuration than `start-single-node`; init is explicit and scale-down requires decommissioning. One running node still provides no HA. |
+| Automatic local PV provisioning | Adding workers and replicas creates storage automatically | Adds a controller, helper pods with host-directory access, and cluster-scoped RBAC. This is a directory provisioner, not disk management or replicated storage. |
+| Local node directories, 10Gi declared capacity | No additional managed disks for new replicas | No enforced quota, reserved disk space, automatic expansion or backup. Worker root filesystem is shared; monitor it. Node deletion/reimaging/replacement can lose the store. |
+| Required anti-affinity, PV node affinity | One database pod per worker and each store stays on its owning worker | Requires enough usable workers. A pod with an existing claim cannot simply fail over to another worker; recover the failed database node with a fresh store using CockroachDB's node-replacement procedure. |
+| `Retain` for claims and PVs | Protects data from routine scale/namespace deletion | Old claims, PVs and directories require manual reclamation. Retention does not protect against disk loss. Never reuse a decommissioned node's store for a new node. |
+| Insecure SQL and ClusterIP/ingress NetworkPolicy | Simple development access with no public load balancer | No TLS or password authentication; reachable clients can act as root. NetworkPolicy enforcement depends on the cluster network and does not replace authentication. |
+| 250m CPU / 512Mi memory requested; 1 CPU / 1Gi limited per database pod | Small development footprint | CPU throttling and OOM restarts under load. Each pod has 128Mi cache/SQL memory budgets and 1Gi SQL temporary disk cap. Production needs workload sizing. |
+| Pinned image versions, plain manifests | Reviewable installation with no CockroachDB operator | Tags are not immutable digests; upgrades, backups, certificates and recovery remain manual. |
 
-This is a development deployment, not a production or performance-testing setup.
-For production, use at least three database nodes on suitable failure domains,
-TLS/authentication, workload-sized resources and disks, automated off-cluster
-backups with restore tests, monitoring, and a supported upgrade process.
-The inspected Kubernetes cluster has two worker nodes, so additional capacity
-would be needed to place three database replicas on distinct workers.
+The provisioner is v0.0.37, customized from the upstream deployment, scoped to
+StorageClass `cockroach-local-auto` using provisioner ID `cockroach.local/local-path`.
+It runs in `cockroach-storage` and uses `/var/lib/cockroachdb/volumes` on new
+workers, creating a unique directory per PV. This StorageClass is not the cluster
+default. Capacity requests are metadata; the provisioner does not enforce them.
+The provisioner needs Kubernetes API permissions to manage PVs and helper pods;
+its names are prefixed to avoid collisions with other installations.
 
-CockroachDB licensing must be reviewed before changing use or topology.
-The official FAQ says single-node internal development clusters generally do not
-require a license key and are not throttled; production/multi-node use has other requirements.
+Replica 0 retains the existing static PV `cockroachdb-local`, pointing to
+`/var/lib/cockroachdb/cockroach` on `aks-main-11118102-vmss000001`. Other replicas
+use automatically created PVs. The old `cockroach-local` StorageClass is unused.
 
-## Stop or remove
+For a fresh cluster, either prepare that bootstrap directory on the designated
+worker and adjust its PV affinity, or omit the static bootstrap PV document in
+`manifests/storage.yaml` so replica 0 is also dynamically provisioned. On this
+existing cluster, preserve that PV to keep the current database.
 
-Pause the database while retaining the host directory:
+## Scale down, pause and recovery
 
-```bash
-kubectl --kubeconfig=/home/pmiller/.kube/config --context=zebu -n cockroach \
-  scale statefulset/cockroachdb --replicas=0
-```
+Do not decrease replicas on an active multi-node database without first draining
+and decommissioning the affected database nodes. Database node IDs are not pod
+ordinals: obtain them with `cockroach node status`. Remove highest StatefulSet
+ordinals first, wait for `cockroach node decommission ID --wait=all` to complete,
+then reduce the desired replicas in the manifest and apply. Keep enough nodes
+for the configured replication factor. A two-node cluster is not an HA target.
 
-Reapplying the manifests resumes the single replica using the bound PVC.
-Deleting the namespace removes the local PVC and the retained Azure migration
-source PVC/disk. The local PV becomes `Released` and its directory remains; the
-cluster-scoped StorageClass also remains. Host data must be removed separately
-on that worker after the database is stopped:
+Retained claims for permanently decommissioned nodes must not be reused for
+later scale-up. After verifying decommissioning and that the pod is gone, remove
+that node's claim/store under a deliberate cleanup procedure. For dynamically
+provisioned test volumes, changing the PV policy to `Delete` before deleting the
+claim allows the provisioner's teardown to remove its directory. Do not do this
+to stores containing needed data or to the retained bootstrap PV.
 
-```bash
-# DESTRUCTIVE: removes namespace resources and the retained source disk.
-# Local host data remains on the worker.
-kubectl --kubeconfig=/home/pmiller/.kube/config --context=zebu delete namespace cockroach
-```
-
-## Local PV conversion and recovery
-
-The conversion replaced the pod hostPath mount with PVC `cockroachdb-local`.
-PV `cockroachdb-local` points to the same existing directory and worker, so no
-copy or database reinitialization was needed. The StatefulSet rolled its pod to
-use the PVC. A row written before conversion survived conversion and a subsequent
-pod restart. The one-replica rollout causes brief database downtime.
-
-If the PVC is deleted, the PV remains `Released` with the old claim UID. Simply
-reapplying manifests does not reclaim it. After confirming that no database pod
-is running, the retained directory is correct, and the replacement PVC is
-intended to own this data, an administrator can remove the stale PV `claimRef`:
+To pause the entire development database, scale it to zero (all SQL becomes
+unavailable). Reapplying manifests resumes it on its retained stores:
 
 ```bash
-kubectl --kubeconfig=/home/pmiller/.kube/config --context=zebu patch pv cockroachdb-local \
-  --type=json -p='[ {"op": "remove", "path": "/spec/claimRef"} ]'
-kubectl --kubeconfig=/home/pmiller/.kube/config --context=zebu apply -k manifests
+kubectl --context=zebu -n cockroach scale statefulset/cockroachdb --replicas=0
 ```
 
-The manifest reserves the PV for `cockroach/cockroachdb-local`; the PVC selector
-identifies this specific local PV. Verify binding before accepting traffic.
-Do not bind another database to the same directory. If the worker or disk is lost,
-restore an off-node backup to a prepared directory on a replacement worker and
-create a replacement PV with the appropriate node affinity. `Retain` cannot
-recover a lost directory.
+Deleting namespace `cockroach` deletes its claims. Local PVs and directories
+remain under `Retain`; the old Azure rollback disk uses `Delete` and is destroyed.
+The provisioner namespace/RBAC and StorageClasses remain unless separately removed.
+A Released local PV retains the old claim UID. Before reuse, stop any pod that
+could access its directory, verify the intended data and new claim, and clear
+its stale `spec.claimRef`; bind it explicitly to the intended replacement PVC.
+For the bootstrap store that claim is `cockroach/local-data-cockroachdb-0`.
+Do not clear bindings or repoint node affinity while stores are active.
 
-## Historical disk migration and rollback
+On worker/disk loss, use CockroachDB's replacement/decommissioning process to
+replicate onto a new empty store if healthy replicas remain. For total data loss,
+restore an off-node backup. Merely moving PV affinity cannot recover missing data.
+Automated off-node backups and tested recovery are still needed.
 
-The original database was stopped and its complete store copied offline with
-[operations/migrate-to-host.yaml](operations/migrate-to-host.yaml). This one-time
-Job is excluded from Kustomize and refuses a non-empty destination. The
-StatefulSet was recreated because removing `volumeClaimTemplates` is immutable.
-The source PVC `data-cockroachdb-0` remains as a rollback copy and still incurs
-Azure disk charges; it is not used by the running database. It is a point-in-time
-copy and does not contain changes made after migration.
+## Migration history
 
-To roll back to that point, stop the current database, restore the original
-StatefulSet manifest from Git commit `957fc8f`, delete the stopped StatefulSet,
-and apply the restored manifest. It will reuse the retained PVC. Do not run both
-versions concurrently. To preserve newer writes, first perform an offline reverse
-copy or a database backup/restore. Never change the storage node without moving
-the data.
+The initial minimal deployment used `start-single-node` and an Azure disk. Its
+store was copied offline to the host directory using
+[operations/migrate-to-host.yaml](operations/migrate-to-host.yaml), then wrapped
+in a static local PV/PVC. The scalable conversion stopped the database, retained
+that PV, rebound it to `local-data-cockroachdb-0`, and recreated the StatefulSet
+with per-replica claims. The existing initialized database and data were preserved.
 
-For migration replay: scale the old StatefulSet to zero, wait for its pod deletion,
-apply the migration Job and wait for completion, inspect its logs, delete the Job,
-then delete the stopped StatefulSet and apply `manifests`. Current manifests
-create the local PV/PVC for that copied directory. Never rerun the copy
-against an active database. The Job must be absent before the host store starts.
+[operations/enable-replication.sql](operations/enable-replication.sql) changes
+single-node-created replication overrides to three; it was executed once during
+conversion. Do not blindly apply it to a cluster with custom zone policies.
+The original Azure PVC `data-cockroachdb-0` remains an unused rollback copy and
+still incurs disk charges. It is frozen at the earlier host migration; it has no
+subsequent writes. Rollback to that old snapshot requires stopping the current
+database and restoring the original manifest from commit `957fc8f`. Preserve new
+writes using backup/restore or a compatible offline migration before rollback.
 
-## Sources
+## Sources and verification
 
-- [Kubernetes local volumes and node affinity](https://kubernetes.io/docs/concepts/storage/volumes/#local)
-- [Local StorageClass and delayed binding](https://kubernetes.io/docs/concepts/storage/storage-classes/#local)
-- [Single-node command, limitations and insecure mode](https://www.cockroachlabs.com/docs/stable/cockroach-start-single-node)
-- [v26.2 release notes and image tags](https://www.cockroachlabs.com/docs/releases/v26.2)
-- [Licensing FAQ](https://www.cockroachlabs.com/docs/stable/licensing-faqs)
+- [CockroachDB Kubernetes deployment](https://www.cockroachlabs.com/docs/stable/deploy-cockroachdb-with-kubernetes)
+- [Local Path Provisioner v0.0.37](https://github.com/rancher/local-path-provisioner/tree/v0.0.37) ([Apache 2.0 license](LOCAL-PATH-LICENSE))
+- [Kubernetes local volumes](https://kubernetes.io/docs/concepts/storage/volumes/#local)
+- [CockroachDB licensing](https://www.cockroachlabs.com/docs/stable/licensing-faqs)
 
-See [deployment verification](VERIFICATION.md) for results from the actual cluster.
+See [VERIFICATION.md](VERIFICATION.md) for checks on the actual cluster.

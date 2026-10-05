@@ -6,6 +6,10 @@ metadata:
 spec:
   serviceName: cockroachdb-headless
   replicas: 1
+  podManagementPolicy: Parallel
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
   selector:
     matchLabels:
       app: cockroachdb
@@ -14,18 +18,34 @@ spec:
       labels:
         app: cockroachdb
     spec:
+      nodeSelector:
+        kubernetes.io/os: linux
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 60
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: cockroachdb
+              topologyKey: kubernetes.io/hostname
       containers:
         - name: cockroachdb
           image: cockroachdb/cockroach:v26.2.7
           imagePullPolicy: IfNotPresent
           command: [/cockroach/cockroach]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
           args:
-            - start-single-node
+            - start
             - --insecure
             - --listen-addr=0.0.0.0:26257
             - --http-addr=0.0.0.0:8080
+            - --advertise-addr=$(POD_NAME).cockroachdb-headless.cockroach.svc.cluster.local:26257
+            - --join=cockroachdb-0.cockroachdb-headless.cockroach.svc.cluster.local:26257,cockroachdb-1.cockroachdb-headless.cockroach.svc.cluster.local:26257,cockroachdb-2.cockroachdb-headless.cockroach.svc.cluster.local:26257
             - --store=/cockroach/cockroach-data
             - --cache=128MiB
             - --max-sql-memory=128MiB
@@ -48,7 +68,7 @@ spec:
               drop: [ALL]
           startupProbe:
             httpGet:
-              path: /health?ready=1
+              path: /health
               port: http
             periodSeconds: 5
             failureThreshold: 60
@@ -64,9 +84,15 @@ spec:
             periodSeconds: 10
             failureThreshold: 6
           volumeMounts:
-            - name: data
+            - name: local-data
               mountPath: /cockroach/cockroach-data
-      volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: cockroachdb-local
+  volumeClaimTemplates:
+    - metadata:
+        name: local-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        volumeMode: Filesystem
+        storageClassName: cockroach-local-auto
+        resources:
+          requests:
+            storage: 10Gi

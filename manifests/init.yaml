@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cockroachdb-init
+  namespace: cockroach
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: init
+          image: cockroachdb/cockroach:v26.2.7
+          command: [/bin/sh, -ec]
+          args:
+            - |
+              host=cockroachdb-0.cockroachdb-headless.cockroach.svc.cluster.local:26257
+              for attempt in $(seq 1 60); do
+                if /cockroach/cockroach sql --insecure --host="$host" --execute='SELECT 1'; then
+                  echo 'Existing cluster is initialized'
+                  exit 0
+                fi
+                if /cockroach/cockroach init --insecure --host="$host"; then
+                  exit 0
+                fi
+                sleep 5
+              done
+              exit 1

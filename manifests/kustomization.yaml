@@ -3,6 +3,8 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - storage.yaml
+  - local-volume-provisioner.yaml
+  - init.yaml
   - services.yaml
   - networkpolicy.yaml
   - statefulset.yaml
