@@ -8,3 +8,4 @@ resources:
   - services.yaml
   - networkpolicy.yaml
   - statefulset.yaml
+  - pdb.yaml

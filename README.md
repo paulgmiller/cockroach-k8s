@@ -103,6 +103,21 @@ existing cluster, preserve that PV to keep the current database.
 
 ## Scale down, pause and recovery
 
+The database PodDisruptionBudget uses the integer `maxUnavailable: 1`, so the
+number of pods required to stay Ready grows with the StatefulSet: two at three
+replicas, four at five replicas. At one replica it permits complete downtime;
+at two replicas it does not preserve a two-voter quorum. The budget controls
+voluntary evictions such as node drains, not unexpected worker failures, direct
+pod deletion, or the StatefulSet's own rolling updates. It tracks pod readiness,
+not per-range replication health.
+
+The current storage remains local PVs with required anti-affinity. A PDB alone
+does not make those stores movable during worker replacement. To run three
+database pods on two permanent workers through planned AKS upgrades, migrate
+to per-replica managed CSI disks, use preferred anti-affinity, provide compatible
+surge capacity and disk topology, and verify replication catches up between
+evictions. That storage/placement conversion has not been applied.
+
 Do not decrease replicas on an active multi-node database without first draining
 and decommissioning the affected database nodes. Database node IDs are not pod
 ordinals: obtain them with `cockroach node status`. Remove highest StatefulSet
@@ -161,6 +176,7 @@ writes using backup/restore or a compatible offline migration before rollback.
 - [CockroachDB Kubernetes deployment](https://www.cockroachlabs.com/docs/stable/deploy-cockroachdb-with-kubernetes)
 - [Local Path Provisioner v0.0.37](https://github.com/rancher/local-path-provisioner/tree/v0.0.37) ([Apache 2.0 license](LOCAL-PATH-LICENSE))
 - [Kubernetes local volumes](https://kubernetes.io/docs/concepts/storage/volumes/#local)
+- [Kubernetes PodDisruptionBudget semantics](https://kubernetes.io/docs/tasks/run-application/configure-pdb/)
 - [CockroachDB licensing](https://www.cockroachlabs.com/docs/stable/licensing-faqs)
 
 See [VERIFICATION.md](VERIFICATION.md) for checks on the actual cluster.

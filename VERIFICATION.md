@@ -20,6 +20,10 @@ Verified on 2026-10-04 (America/Los_Angeles) against context `zebu`, using
   and 56 under-replicated ranges. Under-replication is expected with only one
   running database node and a desired replication factor of three.
 - Final `kubectl diff -k manifests` exited 0 with no differences.
+- Added PDB `cockroachdb` with integer `maxUnavailable: 1`; server dry run and
+  apply succeeded. With the current single database replica, observed status
+  was expectedPods 1, currentHealthy 1, desiredHealthy 0, disruptionsAllowed 1.
+  No disruptive eviction test was performed.
 - All YAML parsed, `bash -n scripts/scale.sh` passed, and Git whitespace checks passed.
 
 ## Scale-out test
