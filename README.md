@@ -46,8 +46,14 @@ The script installs the operator first, then the database, and waits for
 initialization and pod readiness. It defaults to context `zebu` and the kubeconfig
 above; override `KUBE_CONTEXT` and `KUBECONFIG` if needed.
 
-Client endpoint:
-`postgresql://root@cockroachdb-public.cockroach.svc.cluster.local:26257/defaultdb?sslmode=disable`.
+Connection string for applications in `cockroach`, `aggrovites`, or `horsebets`:
+
+```text
+postgresql://root@cockroachdb-public.cockroach.svc.cluster.local:26257/defaultdb?sslmode=disable
+```
+
+No password is required. Replace `defaultdb` with your application's database
+name after creating it.
 The operator's `cockroachdb` service is now headless; applications should use
 **cockroachdb-public**. SQL uses port **26257**; inter-node RPC uses **26258**.
 
