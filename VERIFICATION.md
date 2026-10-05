@@ -7,10 +7,11 @@ Verified on 2026-10-04 against context `zebu` with the kubeconfig at
 - Namespace `cockroach` created.
 - StatefulSet `cockroachdb` rolled out successfully: pod `cockroachdb-0` is
   `1/1 Running`, with zero container restarts after the final pod replacement.
-- Active data volume is `hostPath` `/var/lib/cockroachdb/cockroach`, type
-  `DirectoryOrCreate`, on worker `aks-main-11118102-vmss000001`.
+- Active data volume is PVC `cockroachdb-local`, bound to local PV
+  `cockroachdb-local` at `/var/lib/cockroachdb/cockroach` on worker
+  `aks-main-11118102-vmss000001`, with reclaim policy `Retain`.
 - Original PVC `data-cockroachdb-0` is retained only as an offline rollback copy;
-  the running pod has no PVC volume mount.
+  the running pod mounts only the new local PVC.
 - Client service is ClusterIP on SQL 26257 and HTTP 8080; no external IP.
 - SQL connection using service hostname `cockroachdb:26257` succeeded.
 - `SELECT version()` returned CockroachDB CCL v26.2.7, linux amd64.
@@ -21,6 +22,8 @@ Verified on 2026-10-04 against context `zebu` with the kubeconfig at
 - `kubectl diff -k manifests` returned exit code 0, with no differences.
 
 ## Host volume migration
+
+Historical verification of the preceding hostPath deployment:
 
 - Wrote `(1, 'migrated')` to `host_volume_smoke.checks` before stopping the
   original PVC-backed database.
@@ -35,6 +38,26 @@ Verified on 2026-10-04 against context `zebu` with the kubeconfig at
   at the pre-migration state and still includes that temporary test database.
 - Confirmed live pod volumes contain only the hostPath data volume, pod is
   `1/1 Running` with zero container restarts, and manifest diff is empty.
+
+## Local PersistentVolume conversion
+
+- Server-side dry run passed for all resources.
+- Created StorageClass `cockroach-local` with `kubernetes.io/no-provisioner`,
+  `WaitForFirstConsumer`, and reclaim policy `Retain`.
+- Created static local PV `cockroachdb-local` with 10Gi declared capacity,
+  ReadWriteOnce, node affinity, and reservation for the matching namespace/PVC.
+- Created PVC `cockroach/cockroachdb-local`; verified both PVC and PV are Bound.
+- Replaced the StatefulSet hostPath with a PVC mount and removed its node selector.
+- No file copy was needed; the local PV reused the existing directory.
+- A row `(1, 'local-pv-preserved')` written to `local_pv_smoke.checks` before
+  conversion was read successfully through the SQL service after conversion.
+- Restarted the StatefulSet; the same row was read successfully afterward.
+- Dropped the temporary database after verification.
+- Confirmed the final pod uses the local PVC, runs on the PV's worker, and is
+  `1/1 Running` with zero container restarts.
+- Final `kubectl diff -k manifests` returned exit code 0 with no differences.
+- Retain reclamation and node-loss recovery are documented but were not tested
+  destructively. Declared PV capacity does not enforce a directory quota.
 
 Running image digest reported by Kubernetes:
 

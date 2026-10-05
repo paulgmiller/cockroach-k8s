@@ -1,0 +1,49 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: cockroach-local
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: cockroachdb-local
+  labels:
+    storage-owner: cockroachdb
+spec:
+  capacity:
+    storage: 10Gi
+  volumeMode: Filesystem
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: cockroach-local
+  claimRef:
+    namespace: cockroach
+    name: cockroachdb-local
+  local:
+    path: /var/lib/cockroachdb/cockroach
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [aks-main-11118102-vmss000001]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cockroachdb-local
+  namespace: cockroach
+spec:
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  storageClassName: cockroach-local
+  selector:
+    matchLabels:
+      storage-owner: cockroachdb
+  resources:
+    requests:
+      storage: 10Gi
