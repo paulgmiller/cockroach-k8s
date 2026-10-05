@@ -23,7 +23,11 @@ Verified 2026-10-04 America/Los_Angeles (2026-10-05 UTC), context `zebu`.
   one disruption allowed. CrdbCluster default disruptionBudget is 1.
 - SQL uses `cockroachdb-public:26257`; RPC is 26258. Services are internal only.
 - TLS disabled, password authentication absent. NetworkPolicy includes
-  same-namespace SQL/RPC/HTTP and controller namespace traffic.
+  same-namespace SQL/RPC/HTTP, SQL (TCP 26257) from `aggrovites` and `horsebets`,
+  and controller namespace traffic. The application-namespace rule was applied
+  and read back from the cluster; both namespaces have the matching standard
+  `kubernetes.io/metadata.name` label. Cross-namespace client connections were
+  not exercised.
 
 ## Checks performed
 

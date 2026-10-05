@@ -18,6 +18,17 @@ spec:
           port: 26258
         - protocol: TCP
           port: 8080
+    # Application namespaces need SQL access only.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: aggrovites
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: horsebets
+      ports:
+        - protocol: TCP
+          port: 26257
     # Allow controller RPC/health traffic to operator-managed database pods.
     - from:
         - namespaceSelector:

@@ -60,8 +60,9 @@ kubectl --context=zebu -n cockroach port-forward --address=127.0.0.1 \
 SQL locally: `postgresql://root@localhost:26257/defaultdb?sslmode=disable`.
 DB Console: <http://localhost:8080>.
 No LoadBalancer or public ingress is installed. The NetworkPolicy permits
-SQL/RPC/HTTP from this namespace and controller traffic from the operator
-namespace. Clients with access can act as root. Add TLS and authentication before
+SQL/RPC/HTTP from this namespace, SQL (TCP 26257) from all pods in `aggrovites`
+and `horsebets`, and controller traffic from the operator namespace.
+Clients with access can act as root. Add TLS and authentication before
 exposing the database; the chart does not support changing TLS mode in place.
 
 ## Scale up
