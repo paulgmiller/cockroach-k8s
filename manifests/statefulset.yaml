@@ -24,11 +24,13 @@ spec:
       terminationGracePeriodSeconds: 60
       affinity:
         podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchLabels:
-                  app: cockroachdb
-              topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: cockroachdb
+                topologyKey: kubernetes.io/hostname
       containers:
         - name: cockroachdb
           image: cockroachdb/cockroach:v26.2.7
@@ -84,15 +86,15 @@ spec:
             periodSeconds: 10
             failureThreshold: 6
           volumeMounts:
-            - name: local-data
+            - name: data
               mountPath: /cockroach/cockroach-data
   volumeClaimTemplates:
     - metadata:
-        name: local-data
+        name: data
       spec:
         accessModes: [ReadWriteOnce]
         volumeMode: Filesystem
-        storageClassName: cockroach-local-auto
+        storageClassName: managed-csi
         resources:
           requests:
             storage: 10Gi

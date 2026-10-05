@@ -1,0 +1,33 @@
+# One-time cleanup of the discarded local CockroachDB store.
+# Run only after the old StatefulSet is stopped and its pod is gone.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cockroachdb-cleanup-local
+  namespace: cockroach
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 120
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: aks-main-11118102-vmss000001
+      containers:
+        - name: cleanup
+          image: docker.io/library/busybox:1.37.0
+          command: [/bin/sh, -ec]
+          args:
+            - |
+              rm -rf /host/cockroach
+              test ! -e /host/cockroach
+              echo 'Discarded local CockroachDB store removed'
+          volumeMounts:
+            - name: host-parent
+              mountPath: /host
+      volumes:
+        - name: host-parent
+          hostPath:
+            path: /var/lib/cockroachdb
+            type: Directory

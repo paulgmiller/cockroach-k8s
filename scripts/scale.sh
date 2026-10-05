@@ -21,8 +21,8 @@ print(sum(not n.get("spec",{}).get("unschedulable",False)
           and n["metadata"].get("labels",{}).get("kubernetes.io/os")=="linux"
           and any(c["type"]=="Ready" and c["status"]=="True" for c in n["status"]["conditions"])
           for n in nodes))')
-if (( workers < replicas )); then
-  echo "Need at least $replicas Ready, schedulable Linux workers; found $workers." >&2
+if (( workers < 2 )); then
+  echo "Need at least two Ready, schedulable Linux workers; found $workers." >&2
   exit 1
 fi
 # Persist desired replicas so future applies do not undo scale-out.
