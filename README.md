@@ -6,12 +6,15 @@ Namespace `cockroach`; Kubernetes context `zebu`. The kubeconfig at
 This deployment uses the **current CockroachDB Operator**, one CockroachDB
 v26.2.7 replica, and one 10Gi `managed-csi` Azure disk. One operator controller
 runs separately in `cockroach-operator-system`, watching only `cockroach`.
-The database remains **insecure: no TLS or password authentication**.
+The default database is **secure: TLS with chart-managed self-signed certificates
+and password authentication**. Clients use `sslmode=require`; no client CA or
+client certificate mount is needed. This encrypts traffic without verifying the
+server identity.
 
 ## Configuration and resource ownership
 
 The main custom resource is **CrdbCluster**, API
-`crdb.cockroachlabs.com/v1beta1`, named `cockroachdb`. The operator creates a
+`crdb.cockroachlabs.com/v1beta1`, named `cockroachdb-secure`. The operator creates a
 **CrdbNode**, pod and PVC for each database node; it handles cluster initialization,
 joining nodes, rolling changes and decommissioning. This is the newer operator,
 not the legacy Public operator.
@@ -23,7 +26,7 @@ not the legacy Public operator.
   The database image overrides the latter's default v26.2.5 with **v26.2.7**.
 - `rendered/`: reviewable chart-generated YAML; regenerate with `scripts/render.sh`.
   Deploy through Helm, rather than applying these files directly.
-- `manifests/`: namespace and ingress NetworkPolicy only.
+- `manifests/`: namespace and NetworkPolicies.
 - `sql/replication-three.sql`: future three-copy replication policy,
   used by the scale helper.
 
@@ -42,34 +45,62 @@ Requires Helm, kubectl, Python 3 and PyYAML (used by the scale helper).
 ./scripts/apply.sh
 ```
 
-The script installs the operator first, then the database, and waits for
-initialization and pod readiness. It defaults to context `zebu` and the kubeconfig
-above; override `KUBE_CONTEXT` and `KUBECONFIG` if needed.
+The script installs the operator, creates the root bootstrap Secret if missing,
+then installs Helm release `cockroachdb-secure`. It waits for initialization,
+`PostInitSQLApplied` and pod readiness. It defaults to context `zebu` and the
+kubeconfig above; override `KUBE_CONTEXT` and `KUBECONFIG` if needed.
 
-Connection string for applications in `cockroach`, `aggrovites`, or `horsebets`:
+`scripts/bootstrap-root.py` generates a random 48-byte token once and stores it
+in Secret `cockroach/cockroachdb-root`, with keys `password` and `init.sql`.
+The CrdbCluster references that SQL through `spec.postInitSQL.secretRef` to set
+root's password. Subsequent deployments reuse the Secret; they do not rotate the
+password. The script refuses to generate replacement credentials if the Secret
+is missing from an initialized secure cluster. Protect and back up this Secret.
+No credentials are written to checked-in files or rendered manifests.
+
+The application connection string is:
 
 ```text
-postgresql://root@cockroachdb-public.cockroach.svc.cluster.local:26257/defaultdb?sslmode=disable
+postgresql://root:PASSWORD@cockroachdb-secure-public.cockroach.svc.cluster.local:26257/DBNAME?sslmode=require
 ```
 
-No password is required. Replace `defaultdb` with your application's database
-name after creating it.
-The operator's `cockroachdb` service is now headless; applications should use
-**cockroachdb-public**. SQL uses port **26257**; inter-node RPC uses **26258**.
+Use the saved password and an existing database name. The migrated cluster has
+`lunch`, `horsebets` and `aggrovites`; `defaultdb` was absent on the source and remains
+absent after full-cluster restore. SQL uses port **26257**; inter-node RPC uses
+**26258**. No LoadBalancer or public ingress is installed. The NetworkPolicy
+allows SQL from `aggrovites`, `horsebets`, `lunch` and `dragonqr`, as well as
+same-namespace and operator traffic.
+
+The three migrated Deployments now read `DATABASE_URL` from their own namespace's
+Secret `cockroachdb-connection`. Each URL preserves the application's database
+name and includes the saved root password with `sslmode=require`. Applications
+need no cross-namespace mounts. Existing MSSQL Secrets are unrelated and are
+not modified. Deployment source manifests maintained elsewhere must preserve
+these Secret references so future application deploys do not revert the change.
 
 ```bash
-export KUBECONFIG=/home/pmiller/.kube/config
 kubectl --context=zebu -n cockroach port-forward --address=127.0.0.1 \
-  service/cockroachdb-public 26257:26257 8080:8080
+  service/cockroachdb-secure-public 26257:26257 8080:8080
 ```
 
-SQL locally: `postgresql://root@localhost:26257/defaultdb?sslmode=disable`.
-DB Console: <http://localhost:8080>.
-No LoadBalancer or public ingress is installed. The NetworkPolicy permits
-SQL/RPC/HTTP from this namespace, SQL (TCP 26257) from all pods in `aggrovites`
-and `horsebets`, and controller traffic from the operator namespace.
-Clients with access can act as root. Add TLS and authentication before
-exposing the database; the chart does not support changing TLS mode in place.
+SQL locally uses the same password with host `localhost` and `sslmode=require`.
+DB Console: <https://localhost:8080> (the certificate is privately signed).
+The operator also uses certificate authentication for administrative operations.
+Password authentication is enforced for SQL clients without client certificates;
+`sslmode=require` does not verify the database server's identity.
+
+Check password authentication from all three application namespaces with:
+
+```bash
+python3 scripts/verify-password.py
+```
+
+This uses each application's saved connection URL without certificate mounts,
+and verifies that incorrect and missing passwords fail. Verification Jobs expire
+automatically after the checks finish.
+
+See [VERIFICATION.md](VERIFICATION.md) for the completed migration, data checks
+and old-database teardown. The one-time migration helper has been removed.
 
 ## Scale up
 
@@ -102,7 +133,7 @@ this policy to five copies; review zone policies separately.
 
 ## Worker upgrades and database upgrades
 
-The operator owns `cockroachdb-pdb` and defaults to a disruption budget of one.
+The operator owns `cockroachdb-secure-pdb` and defaults to a disruption budget of one.
 It implements this as **minAvailable = node count minus one**, equivalent to the
 requested maxUnavailable 1 for the desired cluster size. At one node it is zero;
 at three it becomes two; at five it becomes four. Do not install a second PDB
@@ -142,7 +173,7 @@ previously decommissioned store to shrink the cluster.
 | Operator-managed disruption budget 1 | Adjusts when the desired node count grows | Cannot make one replica highly available or protect against unexpected failures. |
 | PVC retention `whenDeleted: Retain` | Deleting a CrdbNode keeps its disk claim | Retained disks continue costing money. Explicit PVC/namespace deletion destroys data because managed-csi reclaims with Delete. |
 | Small database limits | Requests 250m CPU/512Mi RAM; limits 1 CPU/1Gi | Development sizing, below vendor guidance. Load can throttle or OOM. Cache/SQL budgets are 128Mi each; temporary disk cap is 1Gi. |
-| Insecure SQL and internal-only service | Simple access | No encryption/passwords; reachable clients can act as root. |
+| Secure SQL, password authentication and internal-only service | Encrypted access with a single connection string | `sslmode=require` skips server identity verification; application URLs currently use root. |
 
 No off-cluster backups are configured. Operator management does not provide a
 backup policy by itself. Review CockroachDB licensing for your intended use.

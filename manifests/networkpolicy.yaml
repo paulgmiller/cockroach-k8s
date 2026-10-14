@@ -7,6 +7,7 @@ spec:
   podSelector:
     matchLabels:
       app: cockroachdb
+      app.kubernetes.io/instance: cockroachdb-secure
   policyTypes: [Ingress]
   ingress:
     - from:
@@ -29,6 +30,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: lunch
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: dragonqr
       ports:
         - protocol: TCP
           port: 26257

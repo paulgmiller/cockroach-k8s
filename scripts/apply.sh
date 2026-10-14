@@ -7,11 +7,14 @@ kubectl --context="$context" apply -k "$repo_dir/manifests"
 helm upgrade --install cockroach-operator "$repo_dir/charts/cockroachdb-operator-chart-1.1.0.tgz" \
   --kube-context="$context" --namespace cockroach-operator-system --create-namespace \
   -f "$repo_dir/helm/operator-values.yaml" --wait --timeout 5m
-helm upgrade --install cockroachdb "$repo_dir/charts/cockroachdb-chart-26.2.4.tgz" \
+python3 "$repo_dir/scripts/bootstrap-root.py"
+helm upgrade --install cockroachdb-secure "$repo_dir/charts/cockroachdb-chart-26.2.4.tgz" \
   --kube-context="$context" --namespace cockroach \
   -f "$repo_dir/helm/database-values.yaml" --wait --timeout 5m
 kubectl --context="$context" -n cockroach wait --for=condition=Initialized \
-  crdbcluster/cockroachdb --timeout=300s
+  crdbcluster/cockroachdb-secure --timeout=300s
+kubectl --context="$context" -n cockroach wait --for=condition=PostInitSQLApplied \
+  crdbcluster/cockroachdb-secure --timeout=300s
 kubectl --context="$context" -n cockroach wait --for=condition=Ready \
-  pods -l app=cockroachdb --timeout=300s
+  pods -l app.kubernetes.io/instance=cockroachdb-secure --timeout=300s
 kubectl --context="$context" -n cockroach get crdbclusters,crdbnodes,pods,pvc,pdb

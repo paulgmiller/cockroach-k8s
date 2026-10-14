@@ -1,14 +1,27 @@
 ---
-# Source: cockroachdb-chart/templates/serviceaccount.yaml
+# Source: cockroachdb-chart/templates/serviceaccount-certRotateSelfSigner.yaml
 kind: ServiceAccount
 apiVersion: v1
 metadata:
-  name: cockroachdb
+  name: cockroachdb-secure-rotate-self-signer
   namespace: "cockroach"
   labels:
     helm.sh/chart: cockroachdb-26.2.4
     app.kubernetes.io/name: cockroachdb
-    app.kubernetes.io/instance: "cockroachdb"
+    app.kubernetes.io/instance: "cockroachdb-secure"
+    app.kubernetes.io/managed-by: "Helm"
+
+---
+# Source: cockroachdb-chart/templates/serviceaccount.yaml
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: cockroachdb-secure
+  namespace: "cockroach"
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb-secure"
     app.kubernetes.io/managed-by: "Helm"
 
 ---
@@ -16,11 +29,11 @@ metadata:
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: cockroachdb-cockroach-node-reader
+  name: cockroachdb-secure-cockroach-node-reader
   labels:
     helm.sh/chart: cockroachdb-26.2.4
     app.kubernetes.io/name: cockroachdb
-    app.kubernetes.io/instance: "cockroachdb"
+    app.kubernetes.io/instance: "cockroachdb-secure"
     app.kubernetes.io/managed-by: "Helm"
 rules:
   - apiGroups: [""]
@@ -29,25 +42,107 @@ rules:
   - apiGroups: ["security.openshift.io"]
     resources: ["securitycontextconstraints"]
     verbs: ["use"]
-
 ---
 # Source: cockroachdb-chart/templates/rolebinding.yaml
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: cockroachdb-cockroach-node-reader
+  name: cockroachdb-secure-cockroach-node-reader
   labels:
     helm.sh/chart: cockroachdb-26.2.4
     app.kubernetes.io/name: cockroachdb
-    app.kubernetes.io/instance: "cockroachdb"
+    app.kubernetes.io/instance: "cockroachdb-secure"
     app.kubernetes.io/managed-by: "Helm"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: cockroachdb-cockroach-node-reader
+  name: cockroachdb-secure-cockroach-node-reader
 subjects:
   - kind: ServiceAccount
-    name: cockroachdb
+    name: cockroachdb-secure
+    namespace: "cockroach"
+---
+# Source: cockroachdb-chart/templates/role-certRotateSelfSigner.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cockroachdb-secure-rotate-self-signer
+  namespace: "cockroach"
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb-secure"
+    app.kubernetes.io/managed-by: "Helm"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "update", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get"]
+    resourceNames:
+      - cockroachdb-secure
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete", "get"]
+
+---
+# Source: cockroachdb-chart/templates/role.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cockroachdb-secure
+  namespace: "cockroach"
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb-secure"
+    app.kubernetes.io/managed-by: "Helm"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get"]
+
+---
+# Source: cockroachdb-chart/templates/rolebinding-certRotateSelfSigner.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cockroachdb-secure-rotate-self-signer
+  namespace: "cockroach"
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb-secure"
+    app.kubernetes.io/managed-by: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cockroachdb-secure-rotate-self-signer
+subjects:
+  - kind: ServiceAccount
+    name: cockroachdb-secure-rotate-self-signer
+    namespace: "cockroach"
+
+---
+# Source: cockroachdb-chart/templates/rolebinding.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cockroachdb-secure
+  namespace: "cockroach"
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb-secure"
+    app.kubernetes.io/managed-by: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cockroachdb-secure
+subjects:
+  - kind: ServiceAccount
+    name: cockroachdb-secure
     namespace: "cockroach"
 
 ---
@@ -58,18 +153,20 @@ subjects:
 kind: Service
 apiVersion: v1
 metadata:
-  name: cockroachdb-public
+  name: cockroachdb-secure-public
   namespace: "cockroach"
   labels:
     helm.sh/chart: cockroachdb-26.2.4
     app.kubernetes.io/name: cockroachdb
-    app.kubernetes.io/instance: "cockroachdb"
+    app.kubernetes.io/instance: "cockroachdb-secure"
     app.kubernetes.io/managed-by: "Helm"
     app.kubernetes.io/component: cockroachdb
+  annotations:
+    service.alpha.kubernetes.io/app-protocols: '{"http":"HTTPS"}'
 spec:
   selector:
     app.kubernetes.io/name: cockroachdb
-    app.kubernetes.io/instance: "cockroachdb"
+    app.kubernetes.io/instance: "cockroachdb-secure"
     app: cockroachdb
     app.kubernetes.io/component: cockroachdb
   # Cockroach Cloud operator doesn't provide a way to change the sql,grpc and http ports for the pods. Hence, making these
@@ -90,22 +187,116 @@ spec:
       targetPort: http
 
 ---
+# Source: cockroachdb-chart/templates/cronjob-ca-certSelfSigner.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cockroachdb-secure-rotate-self-signer
+  namespace: "cockroach"
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb-secure"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  schedule: 0 0 1 */11 *
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: cert-rotate-job
+              image: "docker.io/cockroachdb/cockroach-self-signer-cert:1.10"
+              imagePullPolicy: "IfNotPresent"
+              args:
+                - rotate
+                - --ca
+                - --ca-duration=43800h
+                - --ca-expiry=648h
+                - --ca-cron=0 0 1 */11 *
+                - --readiness-wait=30s
+                - --pod-update-timeout=2m
+              env:
+                - name: STATEFULSET_NAME
+                  value: cockroachdb-secure
+                - name: NAMESPACE
+                  value: cockroach
+                - name: CLUSTER_DOMAIN
+                  value: cluster.local
+          serviceAccountName: cockroachdb-secure-rotate-self-signer
+
+---
+# Source: cockroachdb-chart/templates/cronjob-client-node-certSelfSigner.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cockroachdb-secure-rotate-self-signer-client
+  namespace: "cockroach"
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb-secure"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  schedule: 0 0 */26 * *
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: cert-rotate-job
+              image: "docker.io/cockroachdb/cockroach-self-signer-cert:1.10"
+              imagePullPolicy: "IfNotPresent"
+              args:
+                - rotate
+                - --ca-duration=43800h
+                - --ca-expiry=648h
+                - --client
+                - --client-duration=672h
+                - --client-expiry=48h
+                - --node
+                - --node-duration=8760h
+                - --node-expiry=168h
+                - --node-client-cron=0 0 */26 * *
+                - --readiness-wait=30s
+                - --pod-update-timeout=2m
+              env:
+                - name: STATEFULSET_NAME
+                  value: cockroachdb-secure
+                - name: NAMESPACE
+                  value: cockroach
+                - name: CLUSTER_DOMAIN
+                  value: cluster.local
+          serviceAccountName: cockroachdb-secure-rotate-self-signer
+
+---
 # Source: cockroachdb-chart/templates/crdb.yaml
 apiVersion: crdb.cockroachlabs.com/v1beta1
 kind: CrdbCluster
 metadata:
-  name: cockroachdb
+  name: cockroachdb-secure
   namespace: cockroach
   labels:
     helm.sh/chart: cockroachdb-26.2.4
-    app.kubernetes.io/name: cockroachdb-cockroach
-    app.kubernetes.io/instance: cockroachdb
+    app.kubernetes.io/name: cockroachdb-secure-cockroach
+    app.kubernetes.io/instance: cockroachdb-secure
     app.kubernetes.io/version: "26.2.5"
     app.kubernetes.io/managed-by: Helm
     app: cockroachdb
     app.kubernetes.io/component: cockroachdb
 spec:
-  tlsEnabled: false
+  tlsEnabled: true
+  mode: "MutableOnly"
+  postInitSQL:
+    secretRef:
+      key: init.sql
+      name: cockroachdb-root
   regions:
     - cloudProvider: azure
       code: westus3
@@ -115,6 +306,12 @@ spec:
   template:
     spec:
       image: "cockroachdb/cockroach:v26.2.7"
+      certificates:
+        externalCertificates:
+          caConfigMapName: cockroachdb-secure-ca-secret-crt
+          httpSecretName: cockroachdb-secure-client-secret
+          nodeSecretName: cockroachdb-secure-node-secret
+          rootSqlClientSecretName: cockroachdb-secure-client-secret
       dataStore:
         volumeClaimTemplate:
           metadata: {}
@@ -142,7 +339,7 @@ spec:
         metadata:
           labels:
             app.kubernetes.io/name: cockroachdb
-            app.kubernetes.io/instance: "cockroachdb"
+            app.kubernetes.io/instance: "cockroachdb-secure"
             app: cockroachdb
             app.kubernetes.io/component: cockroachdb
           annotations:
@@ -168,32 +365,238 @@ spec:
                   memory: 512Mi
             nodeSelector:
               kubernetes.io/os: linux
-            serviceAccountName: cockroachdb
+            serviceAccountName: cockroachdb-secure
             topologySpreadConstraints: []
       persistentVolumeClaimRetentionPolicy:
         whenDeleted: Retain
+---
+# Source: cockroachdb-chart/templates/serviceaccount-certSelfSigner.yaml
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: cockroachdb-secure-self-signer
+  namespace: "cockroach"
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb-secure"
+    app.kubernetes.io/managed-by: "Helm"
+
+---
+# Source: cockroachdb-chart/templates/role-certSelfSigner.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cockroachdb-secure-self-signer
+  namespace: "cockroach"
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "2"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb-secure"
+    app.kubernetes.io/managed-by: "Helm"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "update", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get"]
+    resourceNames:
+      - cockroachdb-secure
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete", "get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "update", "delete"]
+  - apiGroups: [ "security.openshift.io" ]
+    resources: [ "securitycontextconstraints" ]
+    verbs: [ "use" ]
+
+---
+# Source: cockroachdb-chart/templates/rolebinding-certSelfSigner.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cockroachdb-secure-self-signer
+  namespace: "cockroach"
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "3"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb-secure"
+    app.kubernetes.io/managed-by: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cockroachdb-secure-self-signer
+subjects:
+  - kind: ServiceAccount
+    name: cockroachdb-secure-self-signer
+    namespace: "cockroach"
+
 ---
 # Source: cockroachdb-chart/templates/tests/client.yaml
 kind: Pod
 apiVersion: v1
 metadata:
-  name: cockroachdb-test
+  name: cockroachdb-secure-test
   namespace: "cockroach"
   annotations:
     helm.sh/hook: test-success
 spec:
   restartPolicy: Never
+  volumes:
+    - name: client-certs
+      secret:
+        secretName: cockroachdb-root
+        defaultMode: 0400
   containers:
     - name: client-test
       image: "cockroachdb/cockroach:v26.2.7"
       imagePullPolicy: "IfNotPresent"
+      volumeMounts:
+      - name: client-certs
+        mountPath: /cockroach-certs
       command:
         - /cockroach/cockroach
         - sql
-        - --insecure
+        - --certs-dir
+        - /cockroach-certs
         - --host
-        - cockroachdb-public.cockroach
+        - cockroachdb-secure-public.cockroach
         - --port
         - "26258"
         - -e
         - SHOW DATABASES;
+
+---
+# Source: cockroachdb-chart/templates/job-certSelfSigner.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cockroachdb-secure-self-signer
+  namespace: "cockroach"
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "4"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb-secure"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  template:
+    metadata:
+      name: cockroachdb-secure-self-signer
+      labels:
+        helm.sh/chart: cockroachdb-26.2.4
+        app.kubernetes.io/name: cockroachdb
+        app.kubernetes.io/instance: "cockroachdb-secure"
+        app.kubernetes.io/managed-by: "Helm"
+    spec:
+      securityContext:
+        seccompProfile:
+          type: "RuntimeDefault"
+        runAsGroup: 1000
+        runAsUser: 1000
+        fsGroup: 1000
+        runAsNonRoot: true
+      restartPolicy: Never
+      containers:
+        - name: cert-generate-job
+          image: "docker.io/cockroachdb/cockroach-self-signer-cert:1.10"
+          imagePullPolicy: "IfNotPresent"
+          args:
+            - generate
+            - --ca-duration=43800h
+            - --ca-expiry=648h
+            - --client-duration=672h
+            - --client-expiry=48h
+            - --node-duration=8760h
+            - --node-expiry=168h
+            - --operator-managed=true
+          env:
+            - name: STATEFULSET_NAME
+              value: cockroachdb-secure
+            - name: NAMESPACE
+              value: "cockroach"
+            - name: CLUSTER_DOMAIN
+              value: cluster.local
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      serviceAccountName: cockroachdb-secure-self-signer
+
+---
+# Source: cockroachdb-chart/templates/job-cleaner.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cockroachdb-secure-self-signer-cleaner
+  namespace: "cockroach"
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+  labels:
+    helm.sh/chart: cockroachdb-26.2.4
+    app.kubernetes.io/name: cockroachdb
+    app.kubernetes.io/instance: "cockroachdb-secure"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      name: cockroachdb-secure-self-signer-cleaner
+      labels:
+        helm.sh/chart: cockroachdb-26.2.4
+        app.kubernetes.io/name: cockroachdb
+        app.kubernetes.io/instance: "cockroachdb-secure"
+        app.kubernetes.io/managed-by: "Helm"
+    spec:
+      securityContext:
+        seccompProfile:
+          type: "RuntimeDefault"
+        runAsGroup: 1000
+        runAsUser: 1000
+        fsGroup: 1000
+        runAsNonRoot: true
+      restartPolicy: Never
+      containers:
+        - name: cleaner
+          image: "docker.io/cockroachdb/cockroach-self-signer-cert:1.10"
+          imagePullPolicy: "IfNotPresent"
+          args:
+            - cleanup
+            - --namespace=cockroach
+          env:
+            - name: STATEFULSET_NAME
+              value: cockroachdb-secure
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      serviceAccountName: cockroachdb-secure-rotate-self-signer
