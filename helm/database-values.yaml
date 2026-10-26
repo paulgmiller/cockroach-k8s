@@ -37,6 +37,8 @@ cockroachdb:
       upsert:
         - --cache=128MiB
         - --max-sql-memory=128MiB
+        # Override the 288MiB default (2.25 x SQL memory) to reduce GC pressure.
+        - --max-go-memory=768MiB
         - --max-disk-temp-storage=1GiB
     podTemplate:
       metadata:
@@ -53,7 +55,7 @@ cockroachdb:
                 memory: 512Mi
               limits:
                 cpu: '1'
-                memory: 1Gi
+                memory: 2Gi
         topologySpreadConstraints: []
         affinity:
           podAntiAffinity:

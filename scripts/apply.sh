@@ -17,4 +17,5 @@ kubectl --context="$context" -n cockroach wait --for=condition=PostInitSQLApplie
   crdbcluster/cockroachdb-secure --timeout=300s
 kubectl --context="$context" -n cockroach wait --for=condition=Ready \
   pods -l app.kubernetes.io/instance=cockroachdb-secure --timeout=300s
+KUBE_CONTEXT="$context" python3 "$repo_dir/scripts/apply-license.py" --if-present
 kubectl --context="$context" -n cockroach get crdbclusters,crdbnodes,pods,pvc,pdb

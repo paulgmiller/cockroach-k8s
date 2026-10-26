@@ -1,3 +1,56 @@
+# License installation verification
+
+Verified 2026-10-26, context `zebu`.
+
+- Applied the supplied Enterprise Free license through certificate-authenticated
+  SQL and verified exact setting readback without printing the key.
+- Stored the accepted key in `cockroach/cockroachdb-license`, data key `license`,
+  using server-side apply; the key is absent from Helm values and rendered YAML.
+- Reapplied the saved Secret successfully through `scripts/apply-license.py`.
+  Deployment now calls the helper after pod readiness, skipping it if no Secret
+  exists. The operator's post-init SQL hook runs once and does not watch renewal.
+- `diagnostics.reporting.enabled` is true. The expiry metric on node 6 reports
+  approximately 31.54 million seconds (365 days) remaining. Successful ongoing
+  telemetry delivery has not been independently verified by this check.
+- No database restart was needed. Nine credential/license helper tests passed,
+  including error redaction and refusal to save rejected license input. Shell
+  syntax and `git diff --check` passed. No license key is written to repository
+  files; the protected temporary input file was removed after installation.
+
+---
+
+# Memory tuning verification
+
+Verified 2026-10-26, context `zebu`, after merging `origin/main` at `cc9cd43`.
+
+- Helm release `cockroachdb-secure` upgraded to revision 13 with only two live
+  value changes: database container memory limit 1Gi -> 2Gi, and explicit
+  `--max-go-memory=768MiB`. Existing three-node count, ZRS storage, CPU resources,
+  512Mi memory requests, 128MiB cache and 128MiB SQL budget were preserved.
+- Helm lint and values comparison passed. The operator reconciled generation 12
+  and rolled all three database pods. Each remains on a separate worker, with
+  a 2Gi container limit. All database nodes are live and available, with zero
+  unavailable or under-replicated ranges.
+- Runtime logs on node 6 report `GoLimitBytes=805306368` (768MiB), replacing
+  the old 301989888 (288MiB). Two consecutive runtime samples ten seconds apart
+  had the same GC count (27), versus several GC cycles per second before tuning.
+- Approximately 13–17 minutes after pod restarts, database CPU samples were
+  78m, 58m and 62m (198m total), compared with earlier samples of 887m, 127m and
+  870m (1884m total). Memory working sets were 750Mi, 745Mi and 858Mi.
+  These are point-in-time observations, not a controlled benchmark or a guarantee
+  of long-term behavior. Recheck after sustained uptime and application load.
+- No authenticated CPU profile was collected. The runtime observations and early
+  improvement support GC pressure as the cause of the earlier high CPU usage.
+- A separate licensing check found no configured `enterprise.license`. The
+  multi-node cluster is older than the documented seven-day unlicensed grace
+  period and appears eligible for the five-concurrent-transaction restriction;
+  no rejected transaction was observed during this check. Memory tuning does not
+  resolve license enforcement. No license settings were changed.
+
+The sections below record earlier migrations and deployments.
+
+---
+
 # ZRS volume migration
 
 Verified 2026-10-23, context `zebu`, operator 1.1.0 and database v26.2.7.

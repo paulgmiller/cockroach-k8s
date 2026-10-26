@@ -4,8 +4,8 @@ Namespace `cockroach`; Kubernetes context `zebu`. The kubeconfig at
 `/home/pmiller/.kube/config` is never committed.
 
 This deployment uses the **current CockroachDB Operator**, three CockroachDB
-v26.2.7 replicas, each with a 10Gi `managed-csi-zrs` Azure disk. One operator controller
-runs separately in `cockroach-operator-system`, watching only `cockroach`.
+v26.2.7 replicas on separate workers, each with a 10Gi `managed-csi-zrs` Azure
+disk. One operator controller runs separately in `cockroach-operator-system`, watching only `cockroach`.
 The default database is **secure: TLS with chart-managed self-signed certificates
 and password authentication**. Clients use `sslmode=require`; no client CA or
 client certificate mount is needed. This encrypts traffic without verifying the
@@ -103,6 +103,69 @@ automatically after the checks finish.
 
 See [VERIFICATION.md](VERIFICATION.md) for the completed migration, data checks
 and old-database teardown. The one-time migration helper has been removed.
+
+## Enterprise Free license
+
+The license key is stored only in Kubernetes Secret
+`cockroach/cockroachdb-license`, key `license`, and in CockroachDB's persisted
+`enterprise.license` setting. It is not stored in Helm values or rendered YAML.
+To install or renew a key, use the hidden prompt:
+
+```bash
+python3 scripts/apply-license.py --store
+```
+
+The helper applies the key over certificate-authenticated SQL, verifies exact
+readback without printing it, then saves the accepted key in the Secret.
+It can also read a key from standard input. To reapply the saved Secret:
+
+```bash
+python3 scripts/apply-license.py
+```
+
+`scripts/apply.sh` runs this helper with `--if-present` after database readiness;
+installations without a license Secret skip that step. License changes take effect
+without restarting database pods. A saved key can be reapplied after a restore.
+If SQL succeeds but saving the Secret fails, rerun `--store` to finish saving it.
+
+Operator 1.1.0 supports SQL from a Secret through `postInitSQL.secretRef`, but
+executes it only once after initialization. This deployment already uses that
+hook for root-password bootstrap; it is not a watcher for license Secret updates.
+Renewal is handled by this helper, not by operator reconciliation. Changing the
+Secret alone does not apply a new key; run the helper afterward.
+
+The Free license requires telemetry and annual renewal. Telemetry is enabled;
+check that reporting continues to succeed. See the
+[licensing FAQ](https://docs.cockroachlabs.com/docs/v26.2/licensing-faqs).
+
+## Memory tuning
+
+Each database container requests 250m CPU/512Mi RAM and has limits of 1 CPU/2Gi
+RAM. Startup flags keep the Pebble cache and SQL query budget at 128MiB each,
+with an explicit `--max-go-memory=768MiB` Go runtime soft limit.
+
+Without that explicit flag, CockroachDB v26.2.7 derives the Go limit from
+`--max-sql-memory`: 128MiB x 2.25 = 288MiB, subject to available-memory constraints.
+Raising only the Kubernetes memory limit does not raise that derived value.
+The Go budget covers runtime-managed memory beyond SQL queries; native storage
+allocations and the cache also need room within the container limit. The 2Gi
+container limit is a ceiling, not a reservation or immediate allocation.
+
+This tuning follows observed CPU usage near 0.9 cores on two quiet nodes, with
+Go allocations around 360–375MiB exceeding the old 288MiB soft limit and several
+GC cycles per second. Memory pressure is the suspected cause; no authenticated
+CPU profile was collected. Compare CPU, memory and GC rates after the rollout
+and again after sustained uptime. Heartbeat/election settings remain at defaults.
+Go soft limits can be exceeded; monitor the total process footprint as well.
+After the rollout, an early sample showed 58–78m CPU per database pod, compared
+with 127–887m before tuning; memory working sets were 745–858Mi. This is an early
+observation, not a long-term sizing guarantee. See [VERIFICATION.md](VERIFICATION.md).
+
+Changes belong in `helm/database-values.yaml`; regenerate with
+`scripts/render.sh` and upgrade the database Helm release. The operator rolls
+nodes; wait for reconciliation and healthy replication after changes.
+See [CockroachDB startup flags](https://docs.cockroachlabs.com/docs/stable/cockroach-start)
+and [Go memory limits](https://go.dev/doc/gc-guide#Memory_limit).
 
 ## Scale up
 
@@ -219,12 +282,12 @@ See [STORAGE.md](STORAGE.md) for the storage decision and pricing comparison.
 | Choice | Benefit | Cost or limitation |
 | --- | --- | --- |
 | Operator | Node creation, disk provisioning, initialization and lifecycle reconciliation | One extra controller; chart requests 500m CPU and 1000Mi RAM, limits 2 CPU/4000Mi. A single controller is not redundant, although its outage does not stop existing database pods. |
-| Three database replicas on two workers | Three copies of each range | Losing the worker hosting two replicas can remove quorum; three workers with suitable placement are needed for worker-failure tolerance. |
+| Three database replicas on three workers | Three copies of each range, with one replica per worker | Worker-failure tolerance requires healthy three-copy replication and suitable placement. |
 | managed-csi-zrs per-node disks | Provision automatically and can reattach across zones in the region | StandardSSD_ZRS costs more than LRS; attachment delays and limits still apply. Requested 10Gi disks bill at the 16Gi tier. |
 | Preferred anti-affinity | Supports three database pods on two workers | Correlated worker failure can lose quorum. |
 | Operator-managed disruption budget 1 | Adjusts when the desired node count grows | Cannot make one replica highly available or protect against unexpected failures. |
 | Retain PV reclamation and PVC retention settings | Retain reclamation preserves the disk even if its PVC is removed | The operator can remove PVCs during decommissioning despite `whenDeleted: Retain`. Released disks require explicit cleanup and continue costing money. |
-| Small database limits | Requests 250m CPU/512Mi RAM; limits 1 CPU/1Gi | Development sizing, below vendor guidance. Load can throttle or OOM. Cache/SQL budgets are 128Mi each; temporary disk cap is 1Gi. |
+| Small database limits | Requests 250m CPU/512Mi RAM; limits 1 CPU/2Gi | Development sizing, below vendor guidance. Load can throttle or OOM. Cache/SQL budgets are 128Mi each, Go soft limit is 768MiB, and temporary disk cap is 1Gi. |
 | Secure SQL, password authentication and internal-only service | Encrypted access with a single connection string | `sslmode=require` skips server identity verification; application URLs currently use root. |
 
 No recurring off-cluster backup policy is configured. One-time migration archives
