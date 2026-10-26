@@ -1,3 +1,162 @@
+# ZRS volume migration
+
+Verified 2026-10-23, context `zebu`, operator 1.1.0 and database v26.2.7.
+
+- Migrated the three zonal StandardSSD_LRS stores to three new StandardSSD_ZRS
+  stores. Capacity remains 10Gi per replica. The secure Helm release now uses
+  `managed-csi-zrs`, with final replica count three, release revision 12 and
+  CrdbCluster generation/observedGeneration 11. TLS, image and resource settings
+  were preserved.
+- Took full-cluster backup job 1221344425431957506, succeeded with 576 rows.
+  `SHOW BACKUP LATEST ... WITH check_files` passed. Copied the backup into a private
+  mode-0600 local archive at `/tmp/zebu-zrs-migration/backup.tar.gz` and onto the
+  first ZRS store. File validation also passed at
+  `nodelocal://5/zrs-migration-20261023T2235` after copying.
+  The local archive contains 29 files, including 15 data SSTs; SHA256:
+  `65aa384a8c9b0ec1289e03f940bbfac26a8052f7cd33b792bf4db8df3cd7b535`.
+  A backup restore rehearsal was not performed.
+- Protected all source PVs with Retain reclamation and ran three replacement
+  cycles, each scaling 3 to 4 to 3. Before each decommission, all four database
+  nodes were live/available with zero unavailable and under-replicated ranges,
+  and Azure confirmed that the added disk was StandardSSD_ZRS and 10Gi.
+- Retired `cockroachdb-secure-87bsx` (database node 3), then
+  `cockroachdb-secure-rvw8l` (node 2), then `cockroachdb-secure-z5z5p` (node 4).
+  The operator removed each old CrdbNode and PVC only after decommissioning;
+  `node status --all --decommission` confirmed zero gossiped replicas on each
+  retired node. The next cycle began only after three healthy replicas remained.
+- The initial storage-template change caused the existing LRS pods to roll,
+  retaining their PVCs as in the earlier experiment. During decommissioning a pod
+  can show 1/2 Ready because the database container intentionally stops accepting
+  clients while the certificate sidecar stays Ready. Health checks used another
+  Ready node when a draining pod refused SQL connections.
+- Final active database nodes and volumes:
+
+| Node ID | CrdbNode | PV |
+| --- | --- | --- |
+| 5 | cockroachdb-secure-wcw8r | pvc-85271c09-5b4d-45f4-b865-00835babfeed |
+| 6 | cockroachdb-secure-4s6vr | pvc-6d031d8f-b713-4419-8f06-9797fd160715 |
+| 7 | cockroachdb-secure-c452k | pvc-1903a92e-764d-473a-82fa-a0b343e4510e |
+
+All three pods are Ready with zero restarts. Each node holds 64 ranges, with
+zero unavailable and under-replicated ranges. Azure reports three attached 10Gi
+StandardSSD_ZRS disks. The new PVs use Retain reclamation and permit attachment
+across zones. Nodes 6 and 7 share the zone-1 worker; node 5 runs in zone 2.
+
+- All 24 database names matched before and after migration. Six sampled table
+  counts also matched: aggrovites.events 36, aggrovites.rsvps 116,
+  horsebets.bets 225, horsebets.horses 123, horsebets.races 9,
+  lunch.lunch_requests 2. This was not a full index fingerprint comparison.
+- Connection Jobs from lunch, horsebets and aggrovites passed using their current
+  `roachkey` Secret references through the database service while the final LRS
+  replica was draining.
+- After data and connection checks, confirmed that all three old PVs were Released
+  and their Azure disks were unattached. Removed the three retired LRS disks and
+  their PVs. DragonQR and WireGuard storage were outside this cleanup.
+- Helm lint, rendered-manifest semantic comparison and `git diff --check` passed.
+  Migration state and resource snapshots are under `/tmp/zebu-zrs-migration/`.
+
+ZRS improves cross-zone disk recovery but does not provide continuous quorum when
+a failed worker hosts two of the three replicas. No recurring off-cluster backup
+policy was configured as part of this migration.
+
+---
+
+# StorageClass change experiment
+
+Verified 2026-10-23, operator 1.1.0, context `zebu`.
+
+- Created `managed-csi-zrs` with provisioner disk.csi.azure.com,
+  StandardSSD_ZRS, WaitForFirstConsumer, expansion enabled and Retain reclamation.
+  Saved the original cluster, CrdbNode, PVC, pod and PV state under
+  `/tmp/zebu-recovery/zrs-experiment/`. Temporarily set the three data PVs to
+  Retain reclamation to protect disks if the operator replaced claims.
+- Confirmed three live, available database nodes and zero unavailable or
+  under-replicated ranges. Changed only the Helm volume template storage class;
+  desired count stayed three and capacity stayed 10Gi. Helm revision 5 applied
+  the change; CrdbCluster generation advanced from 3 to 4.
+- The operator updated CrdbNode `cockroachdb-secure-87bsx` to generation 2 and
+  storageClassName managed-csi-zrs, then evicted and recreated its pod. The
+  original PVC remained Bound with its original UID, PV and managed-csi class.
+  Operator log at nodectrl/pvc.go:72 explicitly said:
+  `ignore conflicting data storage class name existing managed-csi, but got managed-csi-zrs`.
+- Restored managed-csi through Helm revision 6 before the other CrdbNodes were
+  changed. The first node returned to managed-csi at generation 3 and its pod
+  restarted again. All three CrdbNode and PVC UIDs match the saved state; all
+  pods are Ready. Database node IDs remain 2, 3 and 4, each with 64 ranges and
+  zero unavailable or under-replicated ranges.
+- Restored the original Delete reclaim policy on all three active data PVs.
+  The unused ZRS StorageClass remains available and its manifest is included
+  in Kustomize. No ZRS disks were created by this experiment.
+- Helm lint, rendered-manifest semantic comparison and `git diff --check` passed.
+
+This test demonstrates that changing storageClassName on operator 1.1.0 restarts
+an existing pod while preserving its original PVC rather than migrating storage.
+The experiment was stopped after observing the first node; a complete rollout of
+the mismatched template was not exercised. Operator logs are saved locally at
+`/tmp/zebu-recovery/zrs-experiment/operator.log`.
+
+---
+
+# Zonal worker recovery
+
+Verified 2026-10-23, context `zebu`.
+
+- The replacement `main` workers advertise zones `westus3-1` and `westus3-2`.
+  The original CockroachDB PV required an empty Azure disk zone, and Azure
+  confirmed its StandardSSD_LRS disk was nonzonal and unattached. The pod could
+  not schedule on either replacement worker.
+- Created one temporary nonzonal `recovery` worker, Standard_B2s_v2, matching
+  the permanent workers. The original pod `cockroachdb-secure-j2m6z` recovered
+  with its original disk; existing databases were readable. Cordoned this worker
+  after the pod scheduled, so all new database volumes were provisioned on `main`.
+- Scaled the secure Helm release to four replicas with `scripts/scale.sh 4`.
+  Applied the helper's three-copy replication policies, including system ranges.
+  Waited for all four nodes to report zero unavailable and under-replicated ranges.
+- Annotated the original CrdbNode with
+  `crdb.cockroachlabs.com/decommission=true`, saved three replicas in Helm values,
+  and upgraded Helm release `cockroachdb-secure` to revision 4. The operator
+  drained and decommissioned database node 1, then removed its pod and CrdbNode.
+  `cockroach node status --all --decommission` confirmed node 1 was decommissioned
+  with zero gossiped replicas.
+- Database nodes 2, 3 and 4 are active, live and available, each holding 64 ranges
+  with zero unavailable or under-replicated ranges. The CrdbCluster reports
+  readyNodes 3, observedGeneration 3, reconciled true and AllReplicated.
+  Nodes 2 and 3 share the zone-1 worker; node 4 runs on the zone-2 worker.
+- Deleted the temporary recovery pool only after decommissioning completed.
+  Azure now lists only `main`, two workers, Succeeded. Both workers are Ready,
+  and all three database pods are Ready with zero restarts.
+- Protected original PV `pvc-4866b789-7ae0-4f63-8d54-4c061bb199d1` by changing its
+  reclaim policy to Retain before decommissioning. Despite PVC retention settings,
+  the operator removed the original PVC during decommissioning. The PV is Released;
+  Azure confirms the original disk still exists, Unattached. It includes local
+  files from the retired store; do not restart it as a database node.
+  Following the user's subsequent cleanup request, deleted that unattached Azure
+  disk and its released PV. The original PVC, PV and disk are now removed.
+- All 24 database names matched before and after decommissioning. Sampled application
+  row counts also matched: aggrovites.events 36, aggrovites.rsvps 116,
+  horsebets.races 9, horsebets.horses 123, horsebets.bets 225,
+  lunch.lunch_requests 2. These checks do not constitute a full index fingerprint
+  comparison or an off-cluster backup.
+- Reset DragonQR storage with the user's authorization: scaled down its Deployment,
+  deleted `dragon/dragonqr-data`, created an empty 1Gi default-class claim, and
+  restarted the Deployment with `agentpool: main`. Its new PV is
+  `pvc-b0c6f840-6bd3-498f-b81c-cc089f260d86`, zone westus3-2; the pod is Ready.
+- Helm lint, semantic comparison of rendered manifests and `git diff --check`
+  passed. Saved Helm configuration changes only the database replica count.
+
+The repository password-check helper could not start because it assumes a Secret
+named `cockroachdb-connection`; live applications now reference `roachkey`.
+Separate short-lived Jobs using each application's current `roachkey` reference
+successfully executed `SELECT 1` from lunch, horsebets and aggrovites after the
+recovery pool was removed. No credentials were copied or printed.
+The earlier migration records below describe their configuration at that time.
+
+Three database replicas on two workers still cannot guarantee survival of a worker
+failure: losing the worker hosting two replicas can remove quorum. Active disks
+are zonal LRS, so future worker replacements must preserve compatible zone capacity.
+
+---
+
 # Secure migration verification
 
 Verified 2026-10-14, context `zebu`.

@@ -21,12 +21,12 @@ cockroachdb:
       - code: westus3
         cloudProvider: azure
         namespace: cockroach
-        nodes: 1
+        nodes: 3
     dataStore:
       volumeClaimTemplate:
         spec:
           accessModes: [ReadWriteOnce]
-          storageClassName: managed-csi
+          storageClassName: managed-csi-zrs
           resources:
             requests:
               storage: 10Gi

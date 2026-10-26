@@ -301,7 +301,7 @@ spec:
     - cloudProvider: azure
       code: westus3
       namespace: cockroach
-      nodes: 1
+      nodes: 3
   rollingRestartDelay: 30s
   template:
     spec:
@@ -321,7 +321,7 @@ spec:
             resources:
               requests:
                 storage: 10Gi
-            storageClassName: managed-csi
+            storageClassName: managed-csi-zrs
             volumeMode: Filesystem
       sideCars:
         containers: []
